@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CephFS目录分片技术深度解析：从原理到实践</title>
+    <script src="https://cdn.tailwindcss.com/3.3.3"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.5.0/mermaid.min.js"></script>
+    <style>
+        /* 赛博朋克主题样式 */
+        .cyberpunk {
+            --primary: #9D00FF;
+            --secondary: #00FFFF;
+            --accent: #FF2A6D;
+            --bg: #0a0a0a;
+            --text: #e0e0e0;
+            --grid: rgba(157, 0, 255, 0.1);
+            --glass: rgba(15, 15, 15, 0.7);
+            --border: rgba(157, 0, 255, 0.3);
+            --shadow: 0 0 15px rgba(157, 0, 255, 0.5);
+            --code-bg: #1a1a1a;
+            --table-border: rgba(0, 255, 255, 0.2);
+            --table-header: rgba(157, 0, 255, 0.2);
+        }
+
+        /* 默认技术文档主题样式 */
+        .default {
+            --primary: #4f46e5;
+            --secondary: #10b981;
+            --accent: #f59e0b;
+            --bg: #f8fafc;
+            --text: #1e293b;
+            --grid: rgba(241, 245, 249, 1);
+            --glass: rgba(255, 255, 255, 0.7);
+            --border: rgba(209, 213, 219, 0.3);
+            --shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+            --code-bg: #f1f5f9;
+            --table-border: rgba(209, 213, 219, 1);
+            --table-header: rgba(241, 245, 249, 1);
+        }
+
+        /* 深色模式 */
+        .dark {
+            --bg: #0f172a;
+            --text: #f8fafc;
+            --grid: rgba(30, 41, 59, 1);
+            --glass: rgba(15, 23, 42, 0.7);
+            --border: rgba(100, 116, 139, 0.3);
+            --code-bg: #1e293b;
+            --table-border: rgba(51, 65, 85, 1);
+            --table-header: rgba(30, 41, 59, 1);
+        }
+
+        body {
+            font-family: 'Noto Sans SC', sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            transition: all 0.5s ease;
+            background-image: 
+                linear-gradient(var(--grid) 1px, transparent 1px),
+                linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+
+        .glassmorphism {
+            background: var(--glass);
+            backdrop-filter: blur(10px);
+            border-radius: 0.75rem;
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow);
+        }
+
+        .cyberpunk .glassmorphism {
+            box-shadow: 0 0 15px rgba(157, 0, 255, 0.5);
+        }
+
+        .card-hover {
+            transition: all 0.3s ease;
+        }
+
+        .card-hover:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 28px 0 rgba(157, 0, 255, 0.3);
+        }
+
+        .cyberpunk .card-hover:hover {
+            box-shadow: 0 0 20px var(--accent);
+        }
+
+        .highlight-text {
+            position: relative;
+            display: inline-block;
+        }
+
+        .cyberpunk .highlight-text::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 6px;
+            background-color: rgba(157, 0, 255, 0.3);
+            z-index: -1;
+        }
+
+        .default .highlight-text::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 6px;
+            background-color: rgba(79, 70, 229, 0.2);
+            z-index: -1;
+        }
+
+        pre {
+            background-color: var(--code-bg);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            overflow-x: auto;
+            font-family: 'Courier New', Courier, monospace;
+            border: 1px solid var(--border);
+        }
+
+        .cyberpunk pre {
+            border: 1px solid var(--primary);
+            box-shadow: 0 0 10px rgba(157, 0, 255, 0.3);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--table-border);
+        }
+
+        th {
+            background-color: var(--table-header);
+            font-weight: 600;
+        }
+
+        .cyberpunk th {
+            background-color: rgba(157, 0, 255, 0.1);
+            color: var(--secondary);
+        }
+
+        .cyberpunk table {
+            border: 1px solid var(--secondary);
+        }
+
+        .cyberpunk td, .cyberpunk th {
+            border-bottom: 1px solid rgba(0, 255, 255, 0.2);
+        }
+
+        .mermaid {
+            background-color: var(--bg);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin: 1rem 0;
+            border: 1px solid var(--border);
+        }
+
+        .cyberpunk .mermaid {
+            border: 1px solid var(--primary);
+            box-shadow: 0 0 10px rgba(157, 0, 255, 0.3);
+        }
+
+        .loading-animation {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: linear-gradient(90deg, var(--primary), var(--accent));
+            z-index: 9999;
+            animation: loading 1.5s infinite;
+        }
+
+        @keyframes loading {
+            0% { width: 0; left: 0; }
+            50% { width: 100%; left: 0; }
+            100% { width: 0; left: 100%; }
+        }
+
+        .toc-item {
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            transition: all 0.2s ease;
+        }
+
+        .toc-item:hover {
+            background-color: rgba(157, 0, 255, 0.1);
+        }
+
+        .active-toc {
+            background-color: rgba(157, 0, 255, 0.1);
+            font-weight: 600;
+            border-left: 4px solid var(--primary);
+        }
+
+        .cyberpunk .active-toc {
+            border-left: 4px solid var(--accent);
+        }
+
+        /* 赛博朋克特效 */
+        .cyberpunk-effect {
+            position: relative;
+            overflow: hidden;
+        }
+
+        .cyberpunk-effect::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(
+                to bottom right,
+                rgba(157, 0, 255, 0) 0%,
+                rgba(157, 0, 255, 0) 45%,
+                rgba(157, 0, 255, 0.3) 50%,
+                rgba(157, 0, 255, 0) 55%,
+                rgba(157, 0, 255, 0) 100%
+            );
+            transform: rotate(30deg);
+            animation: shine 3s infinite;
+            opacity: 0;
+        }
+
+        @keyframes shine {
+            0% { opacity: 0; transform: rotate(30deg) translate(-30%, -30%); }
+            20% { opacity: 1; }
+            100% { opacity: 0; transform: rotate(30deg) translate(30%, 30%); }
+        }
+
+        .cyberpunk-effect:hover::before {
+            animation: shine 1.5s infinite;
+        }
+
+        /* 故障艺术效果 */
+        .glitch {
+            position: relative;
+        }
+
+        .glitch::before, .glitch::after {
+            content: attr(data-text);
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0.8;
+        }
+
+        .glitch::before {
+            color: #0ff;
+            z-index: -1;
+            animation: glitch-effect 3s infinite;
+        }
+
+        .glitch::after {
+            color: #f0f;
+            z-index: -2;
+            animation: glitch-effect 2s infinite reverse;
+        }
+
+        @keyframes glitch-effect {
+            0% { transform: translate(0); }
+            20% { transform: translate(-3px, 3px); }
+            40% { transform: translate(-3px, -3px); }
+            60% { transform: translate(3px, 3px); }
+            80% { transform: translate(3px, -3px); }
+            100% { transform: translate(0); }
+        }
+
+        /* 霓虹灯效果 */
+        .neon {
+            text-shadow: 0 0 5px var(--primary), 
+                         0 0 10px var(--primary), 
+                         0 0 20px var(--primary);
+        }
+
+        .neon-secondary {
+            text-shadow: 0 0 5px var(--secondary), 
+                         0 0 10px var(--secondary), 
+                         0 0 20px var(--secondary);
+        }
+
+        .neon-accent {
+            text-shadow: 0 0 5px var(--accent), 
+                         0 0 10px var(--accent), 
+                         0 0 20px var(--accent);
+        }
+
+        /* 按钮样式 */
+        .theme-btn {
+            background: var(--glass);
+            border: 1px solid var(--border);
+            color: var(--text);
+            transition: all 0.3s ease;
+        }
+
+        .cyberpunk .theme-btn {
+            border: 1px solid var(--primary);
+            box-shadow: 0 0 10px rgba(157, 0, 255, 0.3);
+        }
+
+        .theme-btn:hover {
+            background: rgba(157, 0, 255, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .cyberpunk .theme-btn:hover {
+            box-shadow: 0 0 15px var(--primary);
+        }
+
+        /* 代码块样式 */
+        code {
+            background-color: var(--code-bg);
+            padding: 0.2rem 0.4rem;
+            border-radius: 0.25rem;
+            font-family: 'Courier New', Courier, monospace;
+        }
+
+        .cyberpunk code {
+            border: 1px solid var(--primary);
+            box-shadow: 0 0 5px rgba(157, 0, 255, 0.2);
+        }
+
+        /* 链接样式 */
+        a {
+            color: var(--primary);
+            transition: all 0.2s ease;
+        }
+
+        .cyberpunk a {
+            color: var(--secondary);
+        }
+
+        a:hover {
+            color: var(--accent);
+            text-decoration: underline;
+        }
+
+        .cyberpunk a:hover {
+            text-shadow: 0 0 5px var(--accent);
+        }
+    </style>
+</head>
+<body class="cyberpunk min-h-screen">
+    <div id="loading" class="loading-animation"></div>
+    
+    <!-- 导航栏 -->
+    <nav class="glassmorphism sticky top-0 z-50 p-4 mb-8 cyberpunk-effect">
+        <div class="container mx-auto flex items-center justify-between">
+            <div class="text-xl font-bold neon">
+                <i class="fas fa-project-diagram mr-2"></i>CephFS目录分片技术
+            </div>
+            <div class="flex items-center space-x-4">
+                <button id="themeToggle" class="p-2 rounded-full theme-btn">
+                    <i class="fas fa-moon dark:hidden"></i>
+                    <i class="fas fa-sun hidden dark:block"></i>
+                </button>
+                <button id="styleToggle" class="p-2 rounded-full theme-btn">
+                    <i class="fas fa-robot"></i>
+                </button>
+                <button id="mobileMenuButton" class="md:hidden p-2 rounded-full theme-btn">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+    
+    <!-- 移动端菜单 -->
+    <div id="mobileMenu" class="glassmorphism fixed top-16 left-0 right-0 mx-4 p-4 hidden z-40">
+        <div class="flex flex-col space-y-2">
+            <a href="#introduction" class="toc-item">引言</a>
+            <a href="#core-principle" class="toc-item">核心原理</a>
+            <a href="#implementation" class="toc-item">实现机制</a>
+        </div>
+    </div>
+    
+    <div class="container mx-auto px-4 md:px-8 py-8">
+        <div class="flex flex-col md:flex-row gap-8">
+            <!-- 目录导航 -->
+            <div class="hidden md:block w-64 flex-shrink-0">
+                <div class="glassmorphism p-4 sticky top-24">
+                    <h3 class="text-lg font-semibold mb-4 neon-secondary">目录导航</h3>
+                    <div class="flex flex-col space-y-2" id="tocContainer">
+                        <a href="#introduction" class="toc-item">引言：CephFS元数据挑战与目录分片的价值</a>
+                        <a href="#core-principle" class="toc-item">核心原理：目录分片的底层逻辑与设计范式</a>
+                        <a href="#implementation" class="toc-item">实现机制：分裂、合并与元数据分布</a>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 主内容区域 -->
+            <div class="flex-1">
+                <article class="prose dark:prose-invert max-w-none">
+                    <!-- 引言部分 -->
+                    <section id="introduction" class="glassmorphism p-6 mb-8 card-hover cyberpunk-effect">
+                        <h2 class="text-2xl font-bold mb-4 glitch" data-text="引言：CephFS元数据挑战与目录分片的价值">引言：CephFS元数据挑战与目录分片的价值</h2>
+                        <p>在分布式文件系统中，元数据管理的扩展性是制约系统性能的核心挑战之一。元数据操作通常占所有文件系统操作的50%以上，其扩展模式因层次化和 interdependent 特性而显著复杂于数据存储的线性扩展（后者可通过增加存储设备直接提升I/O吞吐量）<sup><a href="https://dokk.org/documentation/ceph/v16.2.14/cephfs/dynamic-metadata-management/" target="_blank">[1]</a></sup>。</p>
+                        
+                        <p>CephFS作为典型的分布式文件系统，其元数据架构采用"数据-元数据分离"设计：元数据工作负载与数据工作负载解耦，由独立的元数据服务器（MDS）集群处理，元数据本身存储于专用的元数据池，以避免对RADOS集群造成不必要的负载压力<sup><a href="https://dokk.org/documentation/ceph/v16.2.14/cephfs/dynamic-metadata-management/" target="_blank">[1]</a></sup>.</p>
+                        
+                        <p>然而，这一架构在面对大规模元数据场景时面临显著瓶颈。传统静态分区策略或单MDS节点在处理百万级文件目录时，易出现严重的性能问题：例如，目录遍历操作（如<code>ls</code>）可能因元数据集中存储导致延迟激增，文件创建请求可能因MDS单点处理能力饱和而阻塞。动态子树分区作为CephFS早期采用的扩展方案，通过将分层命名空间分裂为子树并分布到多MDS节点，试图缓解这一问题，但该方法存在固有缺陷：不准确的负载不平衡预测、对工作负载特征的忽视，以及频繁的无效子树迁移，反而可能加剧性能波动<sup><a href="https://dl.acm.org/doi/10.1145/3458817.3476196" target="_blank">[2]</a></sup><sup><a href="https://www.computer.org/csdl/proceedings-article/sc/2015/2807607/12OmNweBUSc" target="_blank">[3]</a></sup>.</p>
+                        
+                        <p>目录分片技术（Directory Fragmentation）的核心价值在于突破上述限制，通过将单个目录的元数据拆分为多个独立片段（fragments），并将这些片段分布式存储于多个MDS守护进程及元数据池对象中，实现元数据负载的精细化水平扩展<sup><a href="https://docs.ceph.com/en/quincy/cephfs/dirfrags/" target="_blank">[5]</a></sup><sup><a href="https://docs.ceph.com/en/mimic/cephfs/dirfrags/" target="_blank">[6]</a></sup>.</p>
+                    </section>
+                    
+                    <!-- 核心原理部分 -->
+                    <section id="core-principle" class="glassmorphism p-6 mb-8 card-hover cyberpunk-effect">
+                        <h2 class="text-2xl font-bold mb-4 glitch" data-text="核心原理：目录分片的底层逻辑与设计范式">核心原理：目录分片的底层逻辑与设计范式</h2>
+                        
+                        <h3 class="text-xl font-semibold mt-6 mb-3 neon-secondary">目录分片的定义与核心目标</h3>
+                        <p>目录分片作为CephFS元数据管理的关键技术，其设计需兼顾分布式扩展与POSIX语义维护，与传统数据分片存在本质差异。数据分片通常通过物理拆分数据块实现负载分散，而元数据分片因需保障目录项一致性等POSIX语义约束，采用"逻辑片段"而非物理拆分——即目录元数据被抽象为可独立管理的逻辑单元，而非直接分割底层存储对象，以确保目录操作的原子性与一致性。</p>
+                        
+                        <p>具体而言，目录分片是指当CephFS中的目录因条目数量庞大或访问频繁而成为元数据负载热点时，将其元数据分割为多个片段（Fragment）的过程。这些片段可分布在多个MDS守护进程及元数据池的多个对象中，实现元数据负载的分布式共享<sup><a href="https://docs.ceph.com/en/quincy/cephfs/dirfrags/" target="_blank">[5]</a></sup><sup><a href="https://docs.ceph.com/en/mimic/cephfs/dirfrags/" target="_blank">[6]</a></sup><sup><a href="https://docs.ceph.com/en/latest/cephfs/dirfrags/" target="_blank">[7]</a></sup>.</p>
+                        
+                        <h3 class="text-xl font-semibold mt-6 mb-3 neon-secondary">与动态子树分区的协同机制</h3>
+                        <p>CephFS中目录分片技术与动态子树分区的协同机制可通过以下mermaid流程图清晰展示：</p>
+                        
+                        <div class="mermaid">
+                            graph TD
+                                subgraph 上层：目录分片技术
+                                    A[水平扩展] --> A1[单目录细粒度并行]
+                                    A --> A2[片段级负载分散]
+                                end
+                                
+                                subgraph 下层：动态子树分区
+                                    B[垂直扩展] --> B1[跨目录负载迁移]
+                                    B --> B2[子树级负载均衡]
+                                end
+                                
+                                A -->|协同机制| B
+                                
+                                classDef upper fill:#82CA9D,stroke:#333
+                                classDef lower fill:#8884D8,stroke:#333
+                                class A,A1,A2 upper
+                                class B,B1,B2 lower
+                        </div>
+                        
+                        <p>在底层架构中，动态子树分区通过分裂分层命名空间并将子树分布到多个MDS节点，实现元数据服务的横向扩展<sup><a href="https://dl.acm.org/doi/10.1145/3458817.3476196" target="_blank">[2]</a></sup>.</p>
+                    </section>
+                    
+                    <!-- 实现机制部分 -->
+                    <section id="implementation" class="glassmorphism p-6 mb-8 card-hover cyberpunk-effect">
+                        <h2 class="text-2xl font-bold mb-4 glitch" data-text="实现机制：分裂、合并与元数据分布">实现机制：分裂、合并与元数据分布</h2>
+                        
+                        <h3 class="text-xl font-semibold mt-6 mb-3 neon-secondary">分片分裂（Split）触发与执行流程</h3>
+                        <p>CephFS目录分片分裂的触发与执行流程可概括为"条件检测-决策延迟-分片拆分"三个阶段，其核心逻辑围绕目录片段大小阈值与均衡性分配展开。</p>
+                        
+                        <p><strong>触发条件</strong>：MDS通过周期性检测机制监控目录片段大小，当片段包含的目录条目数量超过<code>mds_bal_split_size</code>（默认值为10000）时，即满足基本分裂条件<sup><a href="https://docs.ceph.com/en/quincy/cephfs/dirfrags/" target="_blank">[5]</a></sup><sup><a href="https://docs.ceph.com/en/mimic/cephfs/dirfrags/" target="_blank">[6]</a></sup>.</p>
+                        
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>参数名称</th>
+                                    <th>默认值</th>
+                                    <th>功能描述</th>
+                                    <th>影响范围</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>mds_bal_split_size</code></td>
+                                    <td>10000</td>
+                                    <td>目录片段分裂大小阈值</td>
+                                    <td>触发分裂的基本条件，片段条目数超过此值时启动分裂流程</td>
+                                </tr>
+                                <tr>
+                                    <td><code>mds_bal_fragment_fast_factor</code></td>
+                                    <td>-</td>
+                                    <td>快速分裂系数</td>
+                                    <td>当片段大小超过<code>split_size×factor</code>时立即执行分裂（阻塞IO）</td>
+                                </tr>
+                                <tr>
+                                    <td><code>mds_bal_fragment_interval</code></td>
+                                    <td>5秒</td>
+                                    <td>分裂延迟时间</td>
+                                    <td>允许客户端完成短时IO的缓冲期，减少IO抖动</td>
+                                </tr>
+                                <tr>
+                                    <td><code>mds_bal_split_bits</code></td>
+                                    <td>3</td>
+                                    <td>分裂数量指数</td>
+                                    <td>确定新片段数量（2<sup>n</sup>），默认生成8个新片段</td>
+                                </tr>
+                                <tr>
+                                    <td><code>mds_default_dir_hash</code></td>
+                                    <td>2</td>
+                                    <td>哈希算法选择</td>
+                                    <td>决定目录项在新片段中的分布均衡性（0=线性，1=rjenkins1，2=rjenkins2）</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        
+                        <h3 class="text-xl font-semibold mt-6 mb-3 neon-secondary">分片合并（Merge）条件与流程</h3>
+                        <p>与分裂流程相比，CephFS目录分片的合并机制呈现出显著的"保守性"设计特征。合并操作的触发条件被严格限制：仅当目录分片的大小持续低于特定阈值（即配置参数<code>mds_bal_merge_size</code>）时，才符合合并条件<sup><a href="https://docs.ceph.com/en/quincy/cephfs/dirfrags/" target="_blank">[5]</a></sup><sup><a href="https://docs.ceph.com/en/mimic/cephfs/dirfrags/" target="_blank">[6]</a></sup><sup><a href="https://docs.ceph.com/en/latest/cephfs/dirfrags/" target="_blank">[7]</a></sup>.</p>
+                        
+                        <h3 class="text-xl font-semibold mt-6 mb-3 neon-secondary">元数据分布与一致性维护</h3>
+                        <p>CephFS元数据分布以"目录项哈希分布"为核心机制，通过哈希函数将文件名映射到特定片段，实现元数据的分散存储。在初始状态下，所有目录均为单个片段；当目录分裂后，片段会分布到多个MDS和元数据池对象中。</p>
+                    </section>
+                </article>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 页脚 -->
+    <footer class="glassmorphism py-8 mt-12">
+        <div class="container mx-auto px-4 text-center">
+            <p class="text-gray-300">页面内容均由 AI 生成，仅供参考</p>
+            <p class="text-gray-300 mt-2">created by <a href="https://space.coze.cn" class="neon-secondary hover:underline" target="_blank">coze space</a></p>
+        </div>
+    </footer>
+    
+    <script>
+        // 加载动画
+        window.addEventListener('load', function() {
+            setTimeout(function() {
+                document.getElementById('loading').style.display = 'none';
+            }, 500);
+        });
+        
+        // 主题切换
+        const themeToggle = document.getElementById('themeToggle');
+        themeToggle.addEventListener('click', function() {
+            document.documentElement.classList.toggle('dark');
+            localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+            updateMermaidTheme();
+        });
+        
+        // 风格切换
+        const styleToggle = document.getElementById('styleToggle');
+        styleToggle.addEventListener('click', function() {
+            document.documentElement.classList.toggle('cyberpunk');
+            document.documentElement.classList.toggle('default');
+            localStorage.setItem('style', document.documentElement.classList.contains('cyberpunk') ? 'cyberpunk' : 'default');
+        });
+        
+        // 初始化主题
+        if (localStorage.getItem('theme') === 'dark' || (!localStorage.getItem('theme') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+        }
+        
+        // 初始化风格
+        if (localStorage.getItem('style') === 'default') {
+            document.documentElement.classList.add('default');
+            document.documentElement.classList.remove('cyberpunk');
+        } else {
+            document.documentElement.classList.add('cyberpunk');
+            document.documentElement.classList.remove('default');
+        }
+        
+        // 移动端菜单切换
+        const mobileMenuButton = document.getElementById('mobileMenuButton');
+        const mobileMenu = document.getElementById('mobileMenu');
+        
+        mobileMenuButton.addEventListener('click', function() {
+            mobileMenu.classList.toggle('hidden');
+        });
+        
+        // 平滑滚动
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                
+                const targetId = this.getAttribute('href');
+                const targetElement = document.querySelector(targetId);
+                
+                if (targetElement) {
+                    window.scrollTo({
+                        top: targetElement.offsetTop - 80,
+                        behavior: 'smooth'
+                    });
+                    
+                    // 更新目录导航高亮
+                    document.querySelectorAll('.toc-item').forEach(item => {
+                        item.classList.remove('active-toc');
+                    });
+                    
+                    this.classList.add('active-toc');
+                    
+                    // 关闭移动端菜单
+                    mobileMenu.classList.add('hidden');
+                }
+            });
+        });
+        
+        // 滚动时更新目录导航高亮
+        window.addEventListener('scroll', function() {
+            const sections = document.querySelectorAll('section[id]');
+            let currentSection = '';
+            
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop - 100;
+                if (window.scrollY >= sectionTop) {
+                    currentSection = '#' + section.id;
+                }
+            });
+            
+            document.querySelectorAll('.toc-item').forEach(item => {
+                item.classList.remove('active-toc');
+                if (item.getAttribute('href') === currentSection) {
+                    item.classList.add('active-toc');
+                }
+            });
+        });
+        
+        // 初始化mermaid
+        function updateMermaidTheme() {
+            mermaid.initialize({
+                startOnLoad: true,
+                theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default',
+                flowchart: {
+                    useMaxWidth: true,
+                    htmlLabels: true,
+                    curve: 'basis'
+                }
+            });
+            
+            // 重新渲染所有mermaid图表
+            document.querySelectorAll('.mermaid').forEach(el => {
+                el.removeAttribute('data-processed');
+                mermaid.init(undefined, el);
+            });
+        }
+        
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default',
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+    </script>
+</body>
+</html>
